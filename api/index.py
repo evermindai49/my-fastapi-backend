@@ -21,17 +21,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 ENV_PATH = BASE_DIR / ".env"
 load_dotenv(dotenv_path=ENV_PATH)
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-if not GROQ_API_KEY:
-    print("[WARNING] 'GROQ_API_KEY' environment variable is missing. Groq requests will fail.")
-
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.2-3b-preview")
-print(f"[INFO] Initializing Groq Client with model: '{GROQ_MODEL}'")
-
-client = OpenAI(
-    base_url="https://api.groq.com/openai/v1",
-    api_key=GROQ_API_KEY or "dummy_key",
-)
 
 app = FastAPI(
     title="EduTech & Skill-Up Groq-Powered API",
@@ -235,7 +225,19 @@ def generate_content_local(
     system_instruction: str,
     temperature: float = 0.2
 ):
-    """Generates structured content via Groq's hosted API endpoint using OpenAI client compatibility."""
+    """Generates structured content via Groq's API, fetching GROQ_API_KEY dynamically per call."""
+    groq_key = os.getenv("GROQ_API_KEY")
+    if not groq_key:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="GROQ_API_KEY environment variable is missing on Vercel runtime."
+        )
+
+    client = OpenAI(
+        base_url="https://api.groq.com/openai/v1",
+        api_key=groq_key,
+    )
+
     try:
         schema_json = json.dumps(response_schema.model_json_schema())
         enhanced_system_prompt = (
@@ -263,7 +265,7 @@ def generate_content_local(
         print(f"[ERROR] Groq API Execution Error: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to query Groq model '{GROQ_MODEL}'. Verify GROQ_API_KEY environment variable."
+            detail=f"Groq API Error: {str(e)}"
         )
 
 
@@ -284,10 +286,6 @@ def parse_llm_json(raw_text: str, schema_class):
 # ------------------------------------------------------------------------------
 # API Endpoints
 # ------------------------------------------------------------------------------
-@app.get("/")
-def read_root():
-    return {"message": "Welcome to EduTech API. Visit /docs for interactive documentation."}
-
 @app.get("/health")
 def health_check():
     return {"status": "ok", "provider": "Groq", "model": GROQ_MODEL}
@@ -327,7 +325,6 @@ def generate_skill_path(payload: SkillPathRequest):
 
 @app.post("/api/v1/generate-lesson", response_model=LessonContentResponse)
 def generate_lesson_content(payload: LessonContentRequest):
-    """Generates an exhaustive, production-grade educational lesson with complete explanations and code/real-world examples."""
     system_instruction = (
         "You are a distinguished university professor and senior software engineer. "
         "Your task is to write complete, rigorous, and highly detailed textbook-quality lessons. "
