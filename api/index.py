@@ -284,6 +284,10 @@ def parse_llm_json(raw_text: str, schema_class):
 # ------------------------------------------------------------------------------
 # API Endpoints
 # ------------------------------------------------------------------------------
+@app.get("/")
+def read_root():
+    return {"message": "Welcome to EduTech API. Visit /docs for interactive documentation."}
+
 @app.get("/health")
 def health_check():
     return {"status": "ok", "provider": "Groq", "model": GROQ_MODEL}
