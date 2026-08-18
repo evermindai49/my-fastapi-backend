@@ -1,3 +1,4 @@
+import ast
 import json
 import os
 import re
@@ -21,11 +22,11 @@ try:
     ENV_PATH = BASE_DIR / ".env"
     load_dotenv(dotenv_path=ENV_PATH)
 except Exception as e:
-    print(f"[INFO] Skipping local .env load in cloud runtime: {e}")
+    print(f"[INFO] Local .env skipped or handled by cloud runtime: {e}")
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-# Active production model strings
+# Active production model strings on Groq
 DEFAULT_PRIMARY_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 GROQ_MODEL = os.getenv("GROQ_MODEL", DEFAULT_PRIMARY_MODEL)
 
@@ -39,10 +40,11 @@ client = OpenAI(
 
 app = FastAPI(
     title="EduTech & Skill-Up Groq-Powered API",
-    version="1.5.0",
+    version="1.6.0",
     description="AI learning backend using hosted Groq inference engine on Vercel/Railway.",
 )
 
+# Robust CORS Configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -188,6 +190,7 @@ class ExerciseResponse(BaseModel):
     initial_code: str = Field(..., validation_alias=AliasChoices("initial_code", "starter_code", "code"))
     hints: List[str] = Field(default_factory=list)
     options: Optional[List[str]] = None
+    solution: Optional[str] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -250,7 +253,7 @@ class SubmissionRequest(BaseModel):
                         break
             if not data.get("user_code"):
                 for key in ["submission", "code", "answer", "user_answer"]:
-                    if data.get(key):
+                    if data.get(key) is not None:
                         data["user_code"] = str(data[key])
                         break
         return data
@@ -306,12 +309,12 @@ def generate_content_local(
 ):
     """Generates structured content via Groq API endpoint with multi-tier failover."""
     api_key = os.getenv("GROQ_API_KEY")
-    
+
     class LocalResponseWrapper:
         def __init__(self, content: str):
             self.text = content
 
-    # Local Fallback when GROQ_API_KEY is not configured
+    # Local Fallback when GROQ_API_KEY is missing or unconfigured
     if not api_key or api_key == "missing_key":
         print("[WARNING] Executing offline fallback response (GROQ_API_KEY unconfigured).")
         fallback_json = {
@@ -330,12 +333,12 @@ def generate_content_local(
         f"CRITICAL REQUIREMENT: Output strictly valid JSON matching this JSON Schema:\n{schema_json}"
     )
 
-    # Active model slugs on Groq LPU
+    # Active production models on Groq LPUs
     fallback_models = [
         "openai/gpt-oss-20b",
         "llama-3.1-8b-instant",
-        "qwen-2.5-32b",
-        "mixtral-8x7b-32768"
+        "qwen-2.5-coder-32b",
+        "mixtral-8x7b-32768",
     ]
 
     models_to_try = [target_model] + [m for m in fallback_models if m != target_model]
@@ -414,7 +417,7 @@ def login_user(payload: LoginRequest):
     )
 
 
-# --- Get Lesson Details Endpoint (Resolves GET /lesson/1 404 issue) ---
+# --- Get Lesson Details Endpoint ---
 @app.get("/lesson/{lesson_id}", response_model=LessonContentResponse)
 @app.get("/api/v1/lesson/{lesson_id}", response_model=LessonContentResponse)
 @app.get("/v1/lesson/{lesson_id}", response_model=LessonContentResponse)
@@ -430,7 +433,6 @@ def get_lesson_by_id(lesson_id: str):
         res_wrapper = generate_content_local(prompt, LessonContentResponse, system_instruction, temperature=0.2)
         return parse_llm_json(res_wrapper.text, LessonContentResponse)
     except Exception as e:
-        # Graceful fallback payload
         return LessonContentResponse(
             id=str(lesson_id),
             title=f"Lesson {lesson_id}: Core Foundations",
@@ -509,12 +511,27 @@ def generate_exercise(payload: ExerciseRequest):
 @app.post("/v1/submit-answer", response_model=FeedbackResponse)
 @app.post("/submit-answer", response_model=FeedbackResponse)
 def submit_answer(payload: SubmissionRequest):
+    # Deterministic local AST syntax verification
+    try:
+        ast.parse(payload.user_code)
+    except SyntaxError as e:
+        return FeedbackResponse(
+            is_correct=False,
+            score=0,
+            feedback=f"Syntax Error on line {e.lineno}: {e.msg}",
+            suggestions=[
+                "Verify indentation, missing colons, or mismatched brackets.",
+                "Ensure standard Python syntax before resubmitting."
+            ]
+        )
+
+    # LLM-based logical verification
     system_instruction = "You are an automated code evaluator. Output strictly valid JSON."
     prompt = f"""
     Evaluate this exercise submission:
     - Challenge Title: {payload.exercise_title}
     - Submitted Code:
-    ```
+    ```python
     {payload.user_code}
     ```
 
@@ -524,7 +541,7 @@ def submit_answer(payload: SubmissionRequest):
     return parse_llm_json(res_wrapper.text, FeedbackResponse)
 
 
-# Catch-all Route for Unmatched Paths
+# Catch-all Route placed explicitly at bottom
 @app.api_route("/{path_name:path}", methods=["GET", "POST", "PUT", "DELETE"])
 async def catch_all(request: Request, path_name: str):
     return JSONResponse(
