@@ -36,7 +36,7 @@ client = OpenAI(
 
 app = FastAPI(
     title="EduTech & Skill-Up Groq-Powered API",
-    version="1.4.3",
+    version="1.4.4",
     description="AI learning backend using hosted Groq inference engine on Vercel.",
 )
 
@@ -290,6 +290,7 @@ def parse_llm_json(raw_text: str, schema_class: Any):
 # ------------------------------------------------------------------------------
 @app.get("/")
 @app.get("/api")
+@app.get("/api/index.py")
 def read_root():
     return {"message": "Welcome to EduTech API. Backend active on Vercel."}
 
