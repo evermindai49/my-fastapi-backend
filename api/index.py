@@ -26,7 +26,7 @@ except Exception as e:
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 # Active Groq production models
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
 
 if not GROQ_API_KEY:
     print("[WARNING] GROQ_API_KEY environment variable is missing!")
@@ -255,7 +255,7 @@ def generate_content_local(
             self.text = content
 
     # Tiered list of fallback models
-    fallback_models = ["llama-3.3-70b-versatile", "mixtral-8x7b-32768", "llama-3.1-8b-instant"]
+    fallback_models = ["openai/gpt-oss-20b", "qwen/qwen3-32b", "qwen/qwen3-32b"]
 
     # Try target model first
     models_to_try = [target_model] + [m for m in fallback_models if m != target_model]
