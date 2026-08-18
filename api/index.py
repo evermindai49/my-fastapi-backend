@@ -25,8 +25,8 @@ except Exception as e:
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-# Standard active Groq production endpoints: "llama3-70b-8192", "llama3-8b-8192", "mixtral-8x7b-32768"
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama3-70b-8192")
+# Active Groq production models: "llama-3.3-70b-specdec", "llama-3.1-8b-instant", "mixtral-8x7b-32768"
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-specdec")
 
 if not GROQ_API_KEY:
     print("[WARNING] GROQ_API_KEY environment variable is missing!")
@@ -38,7 +38,7 @@ client = OpenAI(
 
 app = FastAPI(
     title="EduTech & Skill-Up Groq-Powered API",
-    version="1.4.6",
+    version="1.4.7",
     description="AI learning backend using hosted Groq inference engine on Vercel.",
 )
 
@@ -234,7 +234,7 @@ def generate_content_local(
     system_instruction: str,
     temperature: float = 0.2,
 ):
-    """Generates structured content via Groq API endpoint with fallback."""
+    """Generates structured content via Groq API endpoint with active model fallback."""
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
         raise HTTPException(
@@ -242,7 +242,7 @@ def generate_content_local(
             detail="GROQ_API_KEY environment variable is missing on Vercel environment settings.",
         )
 
-    target_model = os.getenv("GROQ_MODEL", "llama3-70b-8192")
+    target_model = os.getenv("GROQ_MODEL", "llama-3.3-70b-specdec")
 
     schema_json = json.dumps(response_schema.model_json_schema())
     enhanced_system_prompt = (
@@ -269,12 +269,12 @@ def generate_content_local(
 
     except Exception as e:
         print(f"[ERROR] Groq API call failed on {target_model}: {e}")
-        # Fallback to llama3-8b-8192 if the primary model throws a 404/access error
-        if "404" in str(e) or "model_not_found" in str(e):
-            print("[INFO] Attempting fallback to llama3-8b-8192...")
+        # Failover if model string is decommissioned or invalid in Vercel env
+        if "model_decommissioned" in str(e) or "400" in str(e) or "404" in str(e):
+            print("[INFO] Primary model unavailable. Attempting fallback to llama-3.1-8b-instant...")
             try:
                 fallback_response = client.chat.completions.create(
-                    model="llama3-8b-8192",
+                    model="llama-3.1-8b-instant",
                     messages=[
                         {"role": "system", "content": enhanced_system_prompt},
                         {"role": "user", "content": prompt},
@@ -322,7 +322,7 @@ def read_root():
 @app.get("/health")
 @app.get("/api/health")
 def health_check():
-    return {"status": "ok", "provider": "Groq", "model": GROQ_MODEL}
+    return {"status": "ok", "provider": "Groq", "model": os.getenv("GROQ_MODEL", "llama-3.3-70b-specdec")}
 
 
 @app.post("/api/v1/auth/login", response_model=AuthResponse)
