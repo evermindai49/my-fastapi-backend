@@ -24,7 +24,7 @@ except Exception as e:
     print(f"[INFO] Skipping local .env load in cloud runtime: {e}")
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-# Defaulting to active, production-ready Groq model (llama-3.1-8b-instant)
+# Active, production-ready Groq model endpoint
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 
 if not GROQ_API_KEY:
@@ -37,7 +37,7 @@ client = OpenAI(
 
 app = FastAPI(
     title="EduTech & Skill-Up Groq-Powered API",
-    version="1.4.1",
+    version="1.4.2",
     description="AI learning backend using hosted Groq inference engine on Vercel.",
 )
 
@@ -287,19 +287,22 @@ def parse_llm_json(raw_text: str, schema_class: Any):
 
 
 # ------------------------------------------------------------------------------
-# API Endpoints
+# API Endpoints (Dual-routed for Vercel Serverless Rewrites)
 # ------------------------------------------------------------------------------
 @app.get("/")
+@app.get("/api")
 def read_root():
     return {"message": "Welcome to EduTech API. Backend active on Vercel."}
 
 
 @app.get("/health")
+@app.get("/api/health")
 def health_check():
     return {"status": "ok", "provider": "Groq", "model": GROQ_MODEL}
 
 
 @app.post("/api/v1/auth/login", response_model=AuthResponse)
+@app.post("/v1/auth/login", response_model=AuthResponse)
 def login_user(payload: LoginRequest):
     identifier = payload.username or payload.email or "student@example.com"
     return AuthResponse(
@@ -315,6 +318,7 @@ def login_user(payload: LoginRequest):
 
 
 @app.post("/api/v1/generate-path", response_model=SkillPathResponse)
+@app.post("/v1/generate-path", response_model=SkillPathResponse)
 def generate_skill_path(payload: SkillPathRequest):
     system_instruction = "You are an expert curriculum designer. Output strictly valid JSON."
     prompt = f"""
@@ -330,6 +334,7 @@ def generate_skill_path(payload: SkillPathRequest):
 
 
 @app.post("/api/v1/generate-lesson", response_model=LessonContentResponse)
+@app.post("/v1/generate-lesson", response_model=LessonContentResponse)
 def generate_lesson_content(payload: LessonContentRequest):
     system_instruction = "You are an expert technical instructor. Output strictly valid JSON."
     course_context = f"Course: {payload.course_name}" if payload.course_name else "General"
@@ -348,6 +353,7 @@ def generate_lesson_content(payload: LessonContentRequest):
 
 
 @app.post("/api/v1/generate-exercise", response_model=ExerciseResponse)
+@app.post("/v1/generate-exercise", response_model=ExerciseResponse)
 def generate_exercise(payload: ExerciseRequest):
     system_instruction = "You are a coding instructor creating hands-on exercises. Output strictly valid JSON."
     prompt = f"""
@@ -361,6 +367,7 @@ def generate_exercise(payload: ExerciseRequest):
 
 
 @app.post("/api/v1/submit-answer", response_model=FeedbackResponse)
+@app.post("/v1/submit-answer", response_model=FeedbackResponse)
 def submit_answer(payload: SubmissionRequest):
     system_instruction = "You are an automated code evaluator. Output strictly valid JSON."
     prompt = f"""
