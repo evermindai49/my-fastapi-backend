@@ -25,8 +25,8 @@ except Exception as e:
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-# Active Groq production models: "llama-3.3-70b-specdec", "llama-3.1-8b-instant", "mixtral-8x7b-32768"
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-specdec")
+# Active Groq production models
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 if not GROQ_API_KEY:
     print("[WARNING] GROQ_API_KEY environment variable is missing!")
@@ -38,7 +38,7 @@ client = OpenAI(
 
 app = FastAPI(
     title="EduTech & Skill-Up Groq-Powered API",
-    version="1.4.7",
+    version="1.4.8",
     description="AI learning backend using hosted Groq inference engine on Vercel.",
 )
 
@@ -234,7 +234,7 @@ def generate_content_local(
     system_instruction: str,
     temperature: float = 0.2,
 ):
-    """Generates structured content via Groq API endpoint with active model fallback."""
+    """Generates structured content via Groq API endpoint with multi-tier failover."""
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
         raise HTTPException(
@@ -242,7 +242,7 @@ def generate_content_local(
             detail="GROQ_API_KEY environment variable is missing on Vercel environment settings.",
         )
 
-    target_model = os.getenv("GROQ_MODEL", "llama-3.3-70b-specdec")
+    target_model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
     schema_json = json.dumps(response_schema.model_json_schema())
     enhanced_system_prompt = (
@@ -250,49 +250,38 @@ def generate_content_local(
         f"CRITICAL REQUIREMENT: Output strictly valid JSON matching this JSON Schema:\n{schema_json}"
     )
 
-    try:
-        response = client.chat.completions.create(
-            model=target_model,
-            messages=[
-                {"role": "system", "content": enhanced_system_prompt},
-                {"role": "user", "content": prompt},
-            ],
-            response_format={"type": "json_object"},
-            temperature=temperature,
-        )
+    class LocalResponseWrapper:
+        def __init__(self, content: str):
+            self.text = content
 
-        class LocalResponseWrapper:
-            def __init__(self, content: str):
-                self.text = content
+    # Tiered list of fallback models
+    fallback_models = ["llama-3.3-70b-versatile", "mixtral-8x7b-32768", "llama-3.1-8b-instant"]
 
-        return LocalResponseWrapper(response.choices[0].message.content or "{}")
+    # Try target model first
+    models_to_try = [target_model] + [m for m in fallback_models if m != target_model]
 
-    except Exception as e:
-        print(f"[ERROR] Groq API call failed on {target_model}: {e}")
-        # Failover if model string is decommissioned or invalid in Vercel env
-        if "model_decommissioned" in str(e) or "400" in str(e) or "404" in str(e):
-            print("[INFO] Primary model unavailable. Attempting fallback to llama-3.1-8b-instant...")
-            try:
-                fallback_response = client.chat.completions.create(
-                    model="llama-3.1-8b-instant",
-                    messages=[
-                        {"role": "system", "content": enhanced_system_prompt},
-                        {"role": "user", "content": prompt},
-                    ],
-                    response_format={"type": "json_object"},
-                    temperature=temperature,
-                )
-                return LocalResponseWrapper(fallback_response.choices[0].message.content or "{}")
-            except Exception as fallback_err:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Groq API fallback execution failed: {str(fallback_err)}",
-                )
+    last_exception = None
+    for model_name in models_to_try:
+        try:
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": enhanced_system_prompt},
+                    {"role": "user", "content": prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=temperature,
+            )
+            return LocalResponseWrapper(response.choices[0].message.content or "{}")
+        except Exception as e:
+            print(f"[WARNING] Groq execution failed on model '{model_name}': {e}")
+            last_exception = e
+            continue
 
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Groq API call failed: {str(e)}",
-        )
+    raise HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail=f"All configured Groq models failed. Last error: {str(last_exception)}",
+    )
 
 
 def parse_llm_json(raw_text: str, schema_class: Any):
@@ -322,7 +311,7 @@ def read_root():
 @app.get("/health")
 @app.get("/api/health")
 def health_check():
-    return {"status": "ok", "provider": "Groq", "model": os.getenv("GROQ_MODEL", "llama-3.3-70b-specdec")}
+    return {"status": "ok", "provider": "Groq", "model": os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")}
 
 
 @app.post("/api/v1/auth/login", response_model=AuthResponse)
