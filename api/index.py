@@ -2,41 +2,43 @@ import json
 import os
 import re
 from enum import Enum
-from http import HTTPStatus as HttpStatus
 from pathlib import Path
-from typing import List, Optional, Any
+from typing import Any, List, Optional
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, AliasChoices, model_validator, ValidationError
-from dotenv import load_dotenv
 from openai import OpenAI
+from pydantic import AliasChoices, BaseModel, Field, ValidationError, model_validator
 
 # ------------------------------------------------------------------------------
 # Environment & Configuration Setup
 # ------------------------------------------------------------------------------
-BASE_DIR = Path(__file__).resolve().parent.parent
-ENV_PATH = BASE_DIR / ".env"
-load_dotenv(dotenv_path=ENV_PATH)
+try:
+    BASE_DIR = Path(__file__).resolve().parent.parent
+    ENV_PATH = BASE_DIR / ".env"
+    load_dotenv(dotenv_path=ENV_PATH)
+except Exception as e:
+    print(f"[INFO] Skipping local .env load in cloud runtime: {e}")
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-if not GROQ_API_KEY:
-    print("[WARNING] 'GROQ_API_KEY' environment variable is missing. Groq requests will fail.")
+# Defaulting to active, production-ready Groq model (llama-3.1-8b-instant)
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.2-3b-preview")
-print(f"[INFO] Initializing Groq Client with model: '{GROQ_MODEL}'")
+if not GROQ_API_KEY:
+    print("[WARNING] GROQ_API_KEY environment variable is missing!")
 
 client = OpenAI(
     base_url="https://api.groq.com/openai/v1",
-    api_key=GROQ_API_KEY or "dummy_key",
+    api_key=GROQ_API_KEY or "missing_key",
 )
 
 app = FastAPI(
     title="EduTech & Skill-Up Groq-Powered API",
-    version="1.4.0",
-    description="AI learning backend using hosted Groq inference engine with flexible payload resolution."
+    version="1.4.1",
+    description="AI learning backend using hosted Groq inference engine on Vercel.",
 )
 
 app.add_middleware(
@@ -53,10 +55,6 @@ app.add_middleware(
 # ------------------------------------------------------------------------------
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    """Logs detailed payload structures whenever a 422 error is raised."""
-    print(f"\n[422 VALIDATION ERROR]: Endpoint = {request.url.path}")
-    print(f"[ERRORS]: {exc.errors()}")
-    print(f"[BODY]: {exc.body}\n")
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         content={"detail": exc.errors(), "body": exc.body},
@@ -162,7 +160,7 @@ class SkillPathResponse(BaseModel):
     modules: List[ModuleItem]
 
 
-# --- Comprehensive Lesson Content Schemas ---
+# --- Lesson Content Schemas ---
 class LessonContentRequest(BaseModel):
     topic: str = Field(..., validation_alias=AliasChoices("topic", "lesson_title", "title", "subject"))
     module_title: Optional[str] = Field(None, validation_alias=AliasChoices("module_title", "module", "course"))
@@ -231,16 +229,23 @@ def clean_json_response(raw_text: str) -> str:
 
 def generate_content_local(
     prompt: str,
-    response_schema,
+    response_schema: Any,
     system_instruction: str,
-    temperature: float = 0.2
+    temperature: float = 0.2,
 ):
-    """Generates structured content via Groq's hosted API endpoint using OpenAI client compatibility."""
+    """Generates structured content via Groq API endpoint."""
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="GROQ_API_KEY environment variable is missing on Vercel environment settings.",
+        )
+
     try:
         schema_json = json.dumps(response_schema.model_json_schema())
         enhanced_system_prompt = (
             f"{system_instruction}\n\n"
-            f"CRITICAL REQUIREMENT: You MUST output strictly valid JSON matching this JSON Schema:\n{schema_json}"
+            f"CRITICAL REQUIREMENT: Output strictly valid JSON matching this JSON Schema:\n{schema_json}"
         )
 
         response = client.chat.completions.create(
@@ -263,21 +268,21 @@ def generate_content_local(
         print(f"[ERROR] Groq API Execution Error: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to query Groq model '{GROQ_MODEL}'. Verify GROQ_API_KEY environment variable."
+            detail=f"Groq API call failed: {str(e)}",
         )
 
 
-def parse_llm_json(raw_text: str, schema_class):
+def parse_llm_json(raw_text: str, schema_class: Any):
     """Cleans raw text output and validates against target Pydantic schema."""
     cleaned_text = clean_json_response(raw_text)
     try:
         data = json.loads(cleaned_text)
         return schema_class.model_validate(data)
     except (json.JSONDecodeError, ValidationError) as e:
-        print(f"[ERROR] JSON Parsing/Validation Error: {e}\nRaw Output:\n{raw_text}")
+        print(f"[ERROR] JSON Validation Error: {e}\nRaw Output:\n{raw_text}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Model produced output that failed schema validation. Please retry."
+            detail="Model produced output that failed schema validation. Please retry.",
         )
 
 
@@ -286,7 +291,8 @@ def parse_llm_json(raw_text: str, schema_class):
 # ------------------------------------------------------------------------------
 @app.get("/")
 def read_root():
-    return {"message": "Welcome to EduTech API. Visit /docs for interactive documentation."}
+    return {"message": "Welcome to EduTech API. Backend active on Vercel."}
+
 
 @app.get("/health")
 def health_check():
@@ -303,23 +309,21 @@ def login_user(payload: LoginRequest):
             id="usr_01",
             email=identifier,
             name=identifier.split("@")[0].title(),
-            role=UserRole.STUDENT
-        )
+            role=UserRole.STUDENT,
+        ),
     )
 
 
 @app.post("/api/v1/generate-path", response_model=SkillPathResponse)
 def generate_skill_path(payload: SkillPathRequest):
-    system_instruction = (
-        "You are an expert curriculum designer. Output strictly valid JSON matching the requested schema."
-    )
+    system_instruction = "You are an expert curriculum designer. Output strictly valid JSON."
     prompt = f"""
-    Create a comprehensive learning path curriculum for:
+    Create a practical learning path curriculum for:
     - Topic: {payload.topic}
-    - Target Level: {payload.difficulty}
-    - Goals: {payload.goals or 'Master fundamental and practical skills.'}
+    - Level: {payload.difficulty}
+    - Goals: {payload.goals or 'Master fundamental skills.'}
 
-    Organize into logical modules containing specific lessons with unique lesson_ids.
+    Return 3 concise modules with 2-3 lessons each. Provide string lesson_ids.
     """
     res_wrapper = generate_content_local(prompt, SkillPathResponse, system_instruction)
     return parse_llm_json(res_wrapper.text, SkillPathResponse)
@@ -327,63 +331,30 @@ def generate_skill_path(payload: SkillPathRequest):
 
 @app.post("/api/v1/generate-lesson", response_model=LessonContentResponse)
 def generate_lesson_content(payload: LessonContentRequest):
-    """Generates an exhaustive, production-grade educational lesson with complete explanations and code/real-world examples."""
-    system_instruction = (
-        "You are a distinguished university professor and senior software engineer. "
-        "Your task is to write complete, rigorous, and highly detailed textbook-quality lessons. "
-        "Never summarize or leave placeholders. Every code block or example must be complete and syntactically valid."
-    )
-    
-    course_context = f"Course: {payload.course_name}" if payload.course_name else "General Curriculum"
-    module_context = f"Module: {payload.module_title}" if payload.module_title else "Core Concepts"
+    system_instruction = "You are an expert technical instructor. Output strictly valid JSON."
+    course_context = f"Course: {payload.course_name}" if payload.course_name else "General"
+    module_context = f"Module: {payload.module_title}" if payload.module_title else "Core Concept"
 
     prompt = f"""
-    Write a complete, highly thorough textbook-style lesson for the subject:
-
-    - Subject/Topic: {payload.topic}
+    Write a clear, structured educational lesson for:
+    - Subject: {payload.topic}
     - Context: {course_context} | {module_context}
 
-    Your lesson MUST be stored in the 'content' key as valid Markdown and follow this precise section layout:
-
-    # 1. Introduction & Theoretical Overview
-    Provide an in-depth conceptual breakdown of {payload.topic}. Define key terms, state why this concept is critical in modern software engineering or domain architecture, and explain the underlying mechanics.
-
-    # 2. Key Architecture & Core Components
-    Break down the essential elements, theoretical abstractions, or structural components of {payload.topic} using bullet points and Markdown tables where appropriate.
-
-    # 3. Practical Implementation & Fully Worked Examples
-    Provide a complete, fully working code or real-world practical example. 
-    - Write complete, self-contained Python/JavaScript/TypeScript code blocks with zero pseudo-code or missing imports.
-    - Annotate the code line-by-line using Markdown explanations directly beneath or inline comments.
-
-    # 4. Common Pitfalls, Edge Cases & Performance Considerations
-    Discuss 3-4 real-world errors developers make when working with {payload.topic}, how to debug them, and best practices for production deployment.
-
-    # 5. Summary & Real-World Application
-    Conclude with a high-level overview of how this fits into larger end-to-end production pipelines.
-
-    Fill the 'key_takeaways' array with 4 to 6 actionable summary bullets.
+    Format the 'content' field in Markdown with section headers: Overview, Core Mechanics, Code Example, and Best Practices.
+    Provide 4 concise items in 'key_takeaways'.
     """
-    
-    res_wrapper = generate_content_local(
-        prompt=prompt,
-        response_schema=LessonContentResponse,
-        system_instruction=system_instruction,
-        temperature=0.2
-    )
+    res_wrapper = generate_content_local(prompt, LessonContentResponse, system_instruction, temperature=0.2)
     return parse_llm_json(res_wrapper.text, LessonContentResponse)
 
 
 @app.post("/api/v1/generate-exercise", response_model=ExerciseResponse)
 def generate_exercise(payload: ExerciseRequest):
-    system_instruction = (
-        "You are a coding instructor creating hands-on programming challenges. Output strictly valid JSON."
-    )
+    system_instruction = "You are a coding instructor creating hands-on exercises. Output strictly valid JSON."
     prompt = f"""
     Create a practical coding exercise for:
     - Topic: {payload.topic}
 
-    Include clear instructions, starter code with placeholder comments or TODOs (stored in 'initial_code'), and helpful hints.
+    Include clear instructions, starter code with placeholder comments ('initial_code'), and 2-3 hints.
     """
     res_wrapper = generate_content_local(prompt, ExerciseResponse, system_instruction)
     return parse_llm_json(res_wrapper.text, ExerciseResponse)
@@ -391,9 +362,7 @@ def generate_exercise(payload: ExerciseRequest):
 
 @app.post("/api/v1/submit-answer", response_model=FeedbackResponse)
 def submit_answer(payload: SubmissionRequest):
-    system_instruction = (
-        "You are an automated code evaluator. Analyze student code submissions for correctness and code quality."
-    )
+    system_instruction = "You are an automated code evaluator. Output strictly valid JSON."
     prompt = f"""
     Evaluate this exercise submission:
     - Challenge Title: {payload.exercise_title}
@@ -402,7 +371,7 @@ def submit_answer(payload: SubmissionRequest):
     {payload.user_code}
     ```
 
-    Assess correctness (boolean 'is_correct'), assign a score (0-100), give concise feedback, and list key improvement suggestions.
+    Assess correctness (boolean 'is_correct'), score (0-100), concise feedback, and actionable suggestions.
     """
     res_wrapper = generate_content_local(prompt, FeedbackResponse, system_instruction, temperature=0.0)
     return parse_llm_json(res_wrapper.text, FeedbackResponse)
