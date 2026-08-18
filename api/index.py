@@ -24,7 +24,8 @@ except Exception as e:
     print(f"[INFO] Skipping local .env load in cloud runtime: {e}")
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+# Updated active Groq model identifier
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 if not GROQ_API_KEY:
     print("[WARNING] GROQ_API_KEY environment variable is missing!")
@@ -36,7 +37,7 @@ client = OpenAI(
 
 app = FastAPI(
     title="EduTech & Skill-Up Groq-Powered API",
-    version="1.4.4",
+    version="1.4.5",
     description="AI learning backend using hosted Groq inference engine on Vercel.",
 )
 
