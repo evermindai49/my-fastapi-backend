@@ -39,8 +39,8 @@ client = OpenAI(
 
 app = FastAPI(
     title="EduTech & Skill-Up Groq-Powered API",
-    version="1.4.9",
-    description="AI learning backend using hosted Groq inference engine on Vercel.",
+    version="1.5.0",
+    description="AI learning backend using hosted Groq inference engine on Vercel/Railway.",
 )
 
 app.add_middleware(
@@ -180,13 +180,46 @@ class LessonContentRequest(BaseModel):
         return data
 
 
-class LessonContentResponse(BaseModel):
-    title: str
-    content: str
-    key_takeaways: List[str]
-
-
 # --- Exercise Schemas ---
+class ExerciseResponse(BaseModel):
+    id: Optional[str] = None
+    title: str = Field(..., validation_alias=AliasChoices("title", "question", "exercise_title"))
+    instructions: Optional[str] = ""
+    initial_code: str = Field(..., validation_alias=AliasChoices("initial_code", "starter_code", "code"))
+    hints: List[str] = Field(default_factory=list)
+    options: Optional[List[str]] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_exercise_response(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "title" not in data:
+                for alt in ["question", "exercise_title", "name"]:
+                    if data.get(alt):
+                        data["title"] = str(data[alt])
+                        break
+                else:
+                    data["title"] = "Exercise Check"
+
+            if "initial_code" not in data:
+                for alt_key in ["starter_code", "code", "starterCode", "initialCode"]:
+                    if data.get(alt_key) is not None:
+                        data["initial_code"] = str(data[alt_key])
+                        break
+                else:
+                    data["initial_code"] = "# Write your solution here\n"
+        return data
+
+
+class LessonContentResponse(BaseModel):
+    id: Optional[str] = "1"
+    title: str
+    description: Optional[str] = ""
+    content: str
+    key_takeaways: List[str] = Field(default_factory=list)
+    exercises: List[ExerciseResponse] = Field(default_factory=list)
+
+
 class ExerciseRequest(BaseModel):
     topic: str = Field(..., validation_alias=AliasChoices("topic", "exercise_title", "title"))
 
@@ -198,26 +231,6 @@ class ExerciseRequest(BaseModel):
                 if data.get(key):
                     data["topic"] = str(data[key])
                     break
-        return data
-
-
-class ExerciseResponse(BaseModel):
-    title: str
-    instructions: str
-    initial_code: str = Field(..., validation_alias=AliasChoices("initial_code", "starter_code", "code"))
-    hints: List[str]
-
-    @model_validator(mode="before")
-    @classmethod
-    def normalize_exercise_response(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            if "initial_code" not in data:
-                for alt_key in ["starter_code", "code", "starterCode", "initialCode"]:
-                    if data.get(alt_key) is not None:
-                        data["initial_code"] = str(data[alt_key])
-                        break
-                else:
-                    data["initial_code"] = "# Write your solution here\n"
         return data
 
 
@@ -304,7 +317,7 @@ def generate_content_local(
         fallback_json = {
             "is_correct": True,
             "score": 100,
-            "feedback": "Submission processed successfully (Offline mode).",
+            "feedback": "Submission processed successfully (Offline fallback mode).",
             "suggestions": ["Add edge-case validation testing."]
         }
         return LocalResponseWrapper(json.dumps(fallback_json))
@@ -320,9 +333,9 @@ def generate_content_local(
     # Active model slugs on Groq LPU
     fallback_models = [
         "openai/gpt-oss-20b",
-        "qwen/qwen3-32b",
-        "meta-llama/llama-4-scout-17b-16e-instruct",
-        "qwen/qwen3.6-27b"
+        "llama-3.1-8b-instant",
+        "qwen-2.5-32b",
+        "mixtral-8x7b-32768"
     ]
 
     models_to_try = [target_model] + [m for m in fallback_models if m != target_model]
@@ -372,7 +385,7 @@ def parse_llm_json(raw_text: str, schema_class: Any):
 @app.get("/api")
 @app.get("/api/index.py")
 def read_root():
-    return {"message": "Welcome to EduTech API. Backend active on Vercel."}
+    return {"message": "Welcome to EduTech API. Backend active on Vercel/Railway."}
 
 
 @app.get("/health")
@@ -399,6 +412,45 @@ def login_user(payload: LoginRequest):
             role=UserRole.STUDENT,
         ),
     )
+
+
+# --- Get Lesson Details Endpoint (Resolves GET /lesson/1 404 issue) ---
+@app.get("/lesson/{lesson_id}", response_model=LessonContentResponse)
+@app.get("/api/v1/lesson/{lesson_id}", response_model=LessonContentResponse)
+@app.get("/v1/lesson/{lesson_id}", response_model=LessonContentResponse)
+def get_lesson_by_id(lesson_id: str):
+    """Retrieves structured lesson data and exercises by lesson ID."""
+    try:
+        system_instruction = "You are an expert technical instructor. Output strictly valid JSON."
+        prompt = f"""
+        Generate a complete lesson payload for Lesson ID '{lesson_id}'.
+        Set 'id' to '{lesson_id}'. Provide a clear title, description, markdown content body, 3 key takeaways, 
+        and 1 coding exercise with starter code and hints.
+        """
+        res_wrapper = generate_content_local(prompt, LessonContentResponse, system_instruction, temperature=0.2)
+        return parse_llm_json(res_wrapper.text, LessonContentResponse)
+    except Exception as e:
+        # Graceful fallback payload
+        return LessonContentResponse(
+            id=str(lesson_id),
+            title=f"Lesson {lesson_id}: Core Foundations",
+            description=f"Overview and hands-on exercises for lesson module {lesson_id}.",
+            content="### Module Overview\nLearn essential principles and practical code implementations.",
+            key_takeaways=[
+                "Understand core module mechanics",
+                "Implement interactive code handlers",
+                "Validate logic through automated evaluation"
+            ],
+            exercises=[
+                ExerciseResponse(
+                    id=f"ex-{lesson_id}",
+                    title="Foundation Test",
+                    instructions="Implement a function returning True.",
+                    initial_code="# Write your solution below\ndef validate():\n    return True\n",
+                    hints=["Ensure the function returns a boolean value."]
+                )
+            ]
+        )
 
 
 @app.post("/api/v1/generate-path", response_model=SkillPathResponse)
@@ -432,7 +484,7 @@ def generate_lesson_content(payload: LessonContentRequest):
     - Context: {course_context} | {module_context}
 
     Format the 'content' field in Markdown with section headers: Overview, Core Mechanics, Code Example, and Best Practices.
-    Provide 4 concise items in 'key_takeaways'.
+    Provide 4 concise items in 'key_takeaways'. Include 1 relevant exercise.
     """
     res_wrapper = generate_content_local(prompt, LessonContentResponse, system_instruction, temperature=0.2)
     return parse_llm_json(res_wrapper.text, LessonContentResponse)
@@ -472,7 +524,7 @@ def submit_answer(payload: SubmissionRequest):
     return parse_llm_json(res_wrapper.text, FeedbackResponse)
 
 
-# Catch-all Route for Unmatched Vercel Paths
+# Catch-all Route for Unmatched Paths
 @app.api_route("/{path_name:path}", methods=["GET", "POST", "PUT", "DELETE"])
 async def catch_all(request: Request, path_name: str):
     return JSONResponse(
