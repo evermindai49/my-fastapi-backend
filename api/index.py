@@ -24,7 +24,6 @@ except Exception as e:
     print(f"[INFO] Skipping local .env load in cloud runtime: {e}")
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-# Active, production-ready Groq model endpoint
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 
 if not GROQ_API_KEY:
@@ -37,7 +36,7 @@ client = OpenAI(
 
 app = FastAPI(
     title="EduTech & Skill-Up Groq-Powered API",
-    version="1.4.2",
+    version="1.4.3",
     description="AI learning backend using hosted Groq inference engine on Vercel.",
 )
 
@@ -287,7 +286,7 @@ def parse_llm_json(raw_text: str, schema_class: Any):
 
 
 # ------------------------------------------------------------------------------
-# API Endpoints (Dual-routed for Vercel Serverless Rewrites)
+# API Endpoints
 # ------------------------------------------------------------------------------
 @app.get("/")
 @app.get("/api")
@@ -319,6 +318,7 @@ def login_user(payload: LoginRequest):
 
 @app.post("/api/v1/generate-path", response_model=SkillPathResponse)
 @app.post("/v1/generate-path", response_model=SkillPathResponse)
+@app.post("/generate-path", response_model=SkillPathResponse)
 def generate_skill_path(payload: SkillPathRequest):
     system_instruction = "You are an expert curriculum designer. Output strictly valid JSON."
     prompt = f"""
@@ -335,6 +335,7 @@ def generate_skill_path(payload: SkillPathRequest):
 
 @app.post("/api/v1/generate-lesson", response_model=LessonContentResponse)
 @app.post("/v1/generate-lesson", response_model=LessonContentResponse)
+@app.post("/generate-lesson", response_model=LessonContentResponse)
 def generate_lesson_content(payload: LessonContentRequest):
     system_instruction = "You are an expert technical instructor. Output strictly valid JSON."
     course_context = f"Course: {payload.course_name}" if payload.course_name else "General"
@@ -354,6 +355,7 @@ def generate_lesson_content(payload: LessonContentRequest):
 
 @app.post("/api/v1/generate-exercise", response_model=ExerciseResponse)
 @app.post("/v1/generate-exercise", response_model=ExerciseResponse)
+@app.post("/generate-exercise", response_model=ExerciseResponse)
 def generate_exercise(payload: ExerciseRequest):
     system_instruction = "You are a coding instructor creating hands-on exercises. Output strictly valid JSON."
     prompt = f"""
@@ -368,6 +370,7 @@ def generate_exercise(payload: ExerciseRequest):
 
 @app.post("/api/v1/submit-answer", response_model=FeedbackResponse)
 @app.post("/v1/submit-answer", response_model=FeedbackResponse)
+@app.post("/submit-answer", response_model=FeedbackResponse)
 def submit_answer(payload: SubmissionRequest):
     system_instruction = "You are an automated code evaluator. Output strictly valid JSON."
     prompt = f"""
@@ -382,6 +385,19 @@ def submit_answer(payload: SubmissionRequest):
     """
     res_wrapper = generate_content_local(prompt, FeedbackResponse, system_instruction, temperature=0.0)
     return parse_llm_json(res_wrapper.text, FeedbackResponse)
+
+
+# Catch-all Route for Unmatched Vercel Paths
+@app.api_route("/{path_name:path}", methods=["GET", "POST", "PUT", "DELETE"])
+async def catch_all(request: Request, path_name: str):
+    return JSONResponse(
+        status_code=404,
+        content={
+            "error": "Route not matched in FastAPI",
+            "requested_path": request.url.path,
+            "method": request.method,
+        },
+    )
 
 
 if __name__ == "__main__":
